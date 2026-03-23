@@ -2,6 +2,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/userModel");
 
+const isProd = process.env.NODE_ENV === "production";
+
 exports.register = async (req, res) => {
   try {
     const { name, email, password } = req.body;
@@ -23,7 +25,10 @@ exports.register = async (req, res) => {
 
     return res.status(201).json({ msg: "User registered", userId });
   } catch (error) {
-    return res.status(500).json({ msg: "Registration failed" });
+    console.error("Registration failed:", error);
+    return res.status(500).json({
+      msg: isProd ? "Registration failed" : error.message || "Registration failed",
+    });
   }
 };
 
@@ -55,6 +60,9 @@ exports.login = async (req, res) => {
       user: { id: user.id, name: user.name, email: user.email },
     });
   } catch (error) {
-    return res.status(500).json({ msg: "Login failed" });
+    console.error("Login failed:", error);
+    return res.status(500).json({
+      msg: isProd ? "Login failed" : error.message || "Login failed",
+    });
   }
 };

@@ -1,32 +1,25 @@
 const db = require("../config/db");
 
 const User = {
-  create: (name, email, password) => {
-    return new Promise((resolve, reject) => {
-      db.run(
-        "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
-        [name, email, password],
-        function (err) {
-          err ? reject(err) : resolve(this.lastID);
-        }
-      );
-    });
+  create: async (name, email, password) => {
+    const result = await db.query(
+      "INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id",
+      [name, email, password]
+    );
+    return result.rows[0].id;
   },
 
-  findById: (id) => {
-    return new Promise((resolve, reject) => {
-      db.get("SELECT id, name, email FROM users WHERE id = ?", [id], (err, row) =>
-        err ? reject(err) : resolve(row)
-      );
-    });
+  findById: async (id) => {
+    const result = await db.query(
+      "SELECT id, name, email FROM users WHERE id = $1",
+      [id]
+    );
+    return result.rows[0];
   },
 
-  findByEmail: (email) => {
-    return new Promise((resolve, reject) => {
-      db.get("SELECT * FROM users WHERE email = ?", [email], (err, row) =>
-        err ? reject(err) : resolve(row)
-      );
-    });
+  findByEmail: async (email) => {
+    const result = await db.query("SELECT * FROM users WHERE email = $1", [email]);
+    return result.rows[0];
   },
 };
 
