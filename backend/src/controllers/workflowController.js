@@ -4,6 +4,14 @@ const Summary = require("../models/summaryModel");
 const Audio = require("../models/audioModel");
 const History = require("../models/historyModel");
 const Case = require("../models/caseModel");
+const { buildSummaryNarration } = require("../services/summary/summaryNarration");
+
+function countWords(text) {
+  return String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
 
 exports.generateRealtime = async (req, res) => {
   try {
@@ -30,12 +38,16 @@ exports.generateRealtime = async (req, res) => {
     let audioURLs = [];
     let audioId = null;
     let audioError = "";
+    let ttsProvider = "";
     try {
-      const ttsText = summary.audioText || summary.fullText || text;
-      const tts = await generateTTS(ttsText, language);
+      const ttsText = buildSummaryNarration(summary) || summary.fullText || text;
+      const tts = await generateTTS(ttsText, {
+        sourceWordCount: countWords(ttsText),
+        language,
+      });
       audioURL = tts.audioURL;
       audioURLs = tts.audioURLs || [];
-      const ttsProvider = tts.provider || "unknown";
+      ttsProvider = tts.provider || "unknown";
       audioId = await Audio.save({
         user_id: req.user.id,
         case_id: caseId,

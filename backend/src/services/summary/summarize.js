@@ -1,4 +1,7 @@
 const { callLLM } = require("../ai/llm");
+const { buildSummaryNarration, normalizeSummaryText } = require("./summaryNarration");
+
+const SUMMARY_FULLTEXT_MAX_CHARS = Math.max(800, Number(process.env.SUMMARY_FULLTEXT_MAX_CHARS || 4200));
 
 function normalize(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
@@ -83,13 +86,29 @@ function fallbackSummary(text) {
     5
   ).join(" ");
 
-  const audioText = [
-    `Case background: ${background || "Background extracted from judgment."}`,
-    `Legal issues: ${legalIssues || "Legal issues identified from case context."}`,
-    `Arguments: ${arguments || "Arguments inferred from petitioner and respondent statements."}`,
-    `Court reasoning: ${courtReasoning || "Court reasoning identified from key findings."}`,
-    `Judgment outcome: ${judgmentOutcome || "Final outcome identified from decision section."}`,
-  ].join("\n\n");
+  const stitchedSummary = clampText(
+    [
+      background,
+      legalIssues,
+      arguments,
+      courtReasoning,
+      judgmentOutcome,
+      uniqueSentences(sentences.slice(0, 12), 6).join(" "),
+    ]
+      .map((value) => normalizeSummaryText(value))
+      .filter(Boolean)
+      .join(" "),
+    SUMMARY_FULLTEXT_MAX_CHARS
+  );
+
+  const audioText = buildSummaryNarration({
+    background: background || "Background extracted from judgment.",
+    legalIssues: legalIssues || "Legal issues identified from case context.",
+    arguments: arguments || "Arguments inferred from petitioner and respondent statements.",
+    courtReasoning: courtReasoning || "Court reasoning identified from key findings.",
+    judgmentOutcome: judgmentOutcome || "Final outcome identified from decision section.",
+    fullText: stitchedSummary,
+  });
 
   return {
     background,
@@ -97,7 +116,7 @@ function fallbackSummary(text) {
     arguments,
     courtReasoning,
     judgmentOutcome,
-    fullText: source,
+    fullText: stitchedSummary,
     audioText,
   };
 }
@@ -109,18 +128,25 @@ function sanitizeSummary(parsed, sourceText, fallback) {
   const courtReasoning = String(parsed.courtReasoning || "").trim() || fallback.courtReasoning;
   const judgmentOutcome = String(parsed.judgmentOutcome || "").trim() || fallback.judgmentOutcome;
 
-  let audioText = String(parsed.fullText || "").trim();
-  if (!audioText) {
-    audioText = [
-      `Case background: ${background}`,
-      `Legal issues: ${legalIssues}`,
-      `Arguments: ${argumentsText}`,
-      `Court reasoning: ${courtReasoning}`,
-      `Judgment outcome: ${judgmentOutcome}`,
-    ]
-      .filter((line) => line.split(": ")[1])
-      .join("\n\n");
-  }
+  const stitchedSummary = clampText(
+    normalizeSummaryText(parsed.fullText)
+      || normalizeSummaryText(
+        [background, legalIssues, argumentsText, courtReasoning, judgmentOutcome]
+          .filter(Boolean)
+          .join(" ")
+      )
+      || fallback.fullText,
+    SUMMARY_FULLTEXT_MAX_CHARS
+  );
+
+  const audioText = buildSummaryNarration({
+    background,
+    legalIssues,
+    arguments: argumentsText,
+    courtReasoning,
+    judgmentOutcome,
+    fullText: stitchedSummary,
+  });
 
   return {
     background,
@@ -128,7 +154,7 @@ function sanitizeSummary(parsed, sourceText, fallback) {
     arguments: argumentsText,
     courtReasoning,
     judgmentOutcome,
-    fullText: normalize(sourceText),
+    fullText: stitchedSummary || normalize(sourceText),
     audioText: audioText || fallback.audioText,
   };
 }
@@ -149,6 +175,7 @@ async function summarizeText(text) {
         "2) Preserve legal meaning and outcome.",
         "3) Mention both sides' arguments if present.",
         "4) Keep each field concise and specific.",
+        "5) fullText must be a concise stitched summary for narration, not raw judgment text.",
       ].join(" "),
       user: `Summarize this legal judgment excerpt accurately:\n${analysisInput}`,
       responseFormat: "json",

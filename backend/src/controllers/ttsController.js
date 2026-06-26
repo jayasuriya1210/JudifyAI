@@ -1,8 +1,15 @@
+const { createHash } = require("crypto");
+const axios = require("axios");
 const { generateTTS, getTTSHealth } = require("../services/tts/tts");
 const Audio = require("../models/audioModel");
 const History = require("../models/historyModel");
 const Case = require("../models/caseModel");
-const axios = require("axios");
+const Summary = require("../models/summaryModel");
+const { buildSummaryNarration, normalizeSummaryText, splitNarrationChunks } = require("../services/summary/summaryNarration");
+const upstashRedis = require("../services/cache/upstashRedis");
+
+const SUMMARY_CHUNK_CHARS = Math.max(350, Number(process.env.TTS_SUMMARY_CHUNK_CHARS || 1100));
+const SUMMARY_CACHE_TTL_SECONDS = Math.max(120, Number(process.env.TTS_SUMMARY_CACHE_TTL_SECONDS || 14400));
 
 function countWords(text) {
   return String(text || "")
@@ -11,16 +18,127 @@ function countWords(text) {
     .filter(Boolean).length;
 }
 
+function toPositiveInt(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? Math.floor(num) : null;
+}
+
+function toSummaryShape(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    caseId: row.case_id,
+    background: row.background,
+    legalIssues: row.legal_issues,
+    arguments: row.arguments,
+    courtReasoning: row.court_reasoning,
+    judgmentOutcome: row.judgment_outcome,
+    fullText: row.full_summary,
+  };
+}
+
+function buildNarrationCacheKey({ userId, summaryId, caseId, requestText }) {
+  if (summaryId) return `judify:tts:narration:v2:u${userId}:s${summaryId}`;
+  if (caseId && requestText) {
+    const hash = createHash("sha1").update(requestText).digest("hex");
+    return `judify:tts:narration:v2:u${userId}:c${caseId}:h${hash}`;
+  }
+  if (caseId) return `judify:tts:narration:v2:u${userId}:c${caseId}`;
+  if (requestText) {
+    const hash = createHash("sha1").update(requestText).digest("hex");
+    return `judify:tts:narration:v2:u${userId}:h${hash}`;
+  }
+  return "";
+}
+
+async function resolveNarrationPayload({ userId, caseId, summaryId, requestText }) {
+  const cleanRequestText = normalizeSummaryText(requestText);
+  const cacheKey = buildNarrationCacheKey({
+    userId,
+    summaryId,
+    caseId,
+    requestText: cleanRequestText,
+  });
+
+  if (cacheKey && upstashRedis.isEnabled()) {
+    const cached = await upstashRedis.getJSON(cacheKey);
+    if (cached?.text) {
+      return {
+        text: String(cached.text),
+        source: String(cached.source || "summary"),
+        inputChunkCount: Number(cached.inputChunkCount || 1),
+        caseId: toPositiveInt(cached.caseId) || caseId || null,
+        summaryId: toPositiveInt(cached.summaryId) || summaryId || null,
+        cacheHit: true,
+      };
+    }
+  }
+
+  let summaryRow = null;
+  if (summaryId) {
+    summaryRow = await Summary.findById(userId, summaryId);
+  }
+  if (!summaryRow && caseId) {
+    summaryRow = await Summary.latestByCase(userId, caseId);
+  }
+
+  const summaryShape = toSummaryShape(summaryRow);
+  const summaryNarration = summaryShape ? buildSummaryNarration(summaryShape) : "";
+  const narrationBase = summaryNarration || cleanRequestText;
+
+  if (!narrationBase) {
+    return {
+      error: "Summary not found. Generate summary first, then synthesize audio.",
+      status: 404,
+    };
+  }
+
+  const chunks = splitNarrationChunks(narrationBase, SUMMARY_CHUNK_CHARS);
+  const narrationText = chunks.join("\n\n");
+  const payload = {
+    text: narrationText,
+    source: summaryShape ? "summary" : "request",
+    inputChunkCount: chunks.length || 1,
+    caseId: toPositiveInt(summaryShape?.caseId) || caseId || null,
+    summaryId: toPositiveInt(summaryShape?.id) || summaryId || null,
+    cacheHit: false,
+  };
+
+  if (cacheKey && upstashRedis.isEnabled()) {
+    await upstashRedis.setJSON(cacheKey, payload, SUMMARY_CACHE_TTL_SECONDS);
+  }
+
+  return payload;
+}
+
 exports.textToAudio = async (req, res) => {
   try {
     const { text, lang, case_id, summary_id, case_title, source_url, pdf_url } = req.body;
-    const parsedCaseId = Number(case_id);
-    if (!text || !text.trim()) {
-      return res.status(400).json({ msg: "text is required" });
+    const parsedCaseId = toPositiveInt(case_id);
+    const parsedSummaryId = toPositiveInt(summary_id);
+    const requestText = normalizeSummaryText(text);
+
+    if (!parsedCaseId && !parsedSummaryId && !requestText) {
+      return res.status(400).json({ msg: "Provide summary_id, case_id, or summary text." });
     }
 
-    let resolvedCaseId = Number.isFinite(parsedCaseId) && parsedCaseId > 0 ? parsedCaseId : null;
+    const narration = await resolveNarrationPayload({
+      userId: req.user.id,
+      caseId: parsedCaseId,
+      summaryId: parsedSummaryId,
+      requestText,
+    });
+
+    if (narration.error) {
+      return res.status(narration.status || 400).json({ msg: narration.error });
+    }
+
+    let resolvedCaseId = toPositiveInt(narration.caseId) || parsedCaseId;
     let caseRecord = resolvedCaseId ? await Case.findById(resolvedCaseId, req.user.id) : null;
+
+    if (resolvedCaseId && !caseRecord) {
+      return res.status(404).json({ msg: "Case not found" });
+    }
 
     if (!caseRecord) {
       resolvedCaseId = await Case.createFromSearch({
@@ -36,28 +154,22 @@ exports.textToAudio = async (req, res) => {
       return res.status(500).json({ msg: "Unable to resolve case for audio generation" });
     }
 
-    const requestText = String(text || "").trim();
-    const extractedText = String(caseRecord?.extracted_text || "").trim();
-    const sourceWordCount = countWords(extractedText || requestText);
-    const requestWordCount = countWords(requestText);
+    const textForTTS = narration.text;
+    const tts = await generateTTS(textForTTS, {
+      sourceWordCount: countWords(textForTTS),
+      language: lang || "en",
+    });
 
-    // If request text is much shorter than the PDF content, synthesize from extracted PDF text.
-    const shouldUseExtracted =
-      extractedText &&
-      sourceWordCount >= 300 &&
-      requestWordCount < Math.max(220, Math.floor(sourceWordCount * 0.35));
-
-    const textForTTS = shouldUseExtracted ? extractedText : requestText;
-
-    const tts = await generateTTS(textForTTS, { sourceWordCount });
     const audioURL = tts.audioURL;
     const audioURLs = tts.audioURLs;
     const ttsProvider = tts.provider || "unknown";
     const language = lang || "en";
+    const resolvedSummaryId = toPositiveInt(narration.summaryId) || parsedSummaryId || null;
+
     const audioId = await Audio.save({
       user_id: req.user.id,
       case_id: resolvedCaseId,
-      summary_id: summary_id ? Number(summary_id) : null,
+      summary_id: resolvedSummaryId,
       language,
       audio_url: audioURL,
       audio_urls: audioURLs,
@@ -65,7 +177,19 @@ exports.textToAudio = async (req, res) => {
 
     await History.add(req.user.id, resolvedCaseId, case_title || caseRecord.title || "Untitled case", language);
 
-    return res.json({ audioId, caseId: resolvedCaseId, audioURL, audioURLs, ttsProvider, language });
+    return res.json({
+      audioId,
+      caseId: resolvedCaseId,
+      summaryId: resolvedSummaryId,
+      audioURL,
+      audioURLs,
+      ttsProvider,
+      language,
+      narrationSource: narration.source,
+      narrationChunkCount: narration.inputChunkCount,
+      cacheHit: narration.cacheHit,
+      ttsChunkCount: Number(tts.chunkCount || 1),
+    });
   } catch (error) {
     return res.status(500).json({ msg: error.message || "Audio generation failed" });
   }

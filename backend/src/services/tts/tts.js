@@ -11,8 +11,8 @@ function resolveEnvPath(envValue, fallbackAbsolutePath) {
   return path.isAbsolute(envValue) ? envValue : path.resolve(process.cwd(), envValue);
 }
 
-const defaultPiperPath = path.resolve(PROJECT_ROOT, "Code-Cola-dev2_piper/piper/piper.exe");
-const defaultPiperModelPath = path.resolve(PROJECT_ROOT, "Code-Cola-dev2_piper/models/en_US-amy-medium.onnx");
+const defaultPiperPath = path.resolve(PROJECT_ROOT, "piperTTS/piper/piper.exe");
+const defaultPiperModelPath = path.resolve(PROJECT_ROOT, "piperTTS/models/en_US-amy-medium.onnx");
 
 const PIPER_ENABLED = process.env.PIPER_ENABLED !== "false";
 const PIPER_PATH = resolveEnvPath(process.env.PIPER_PATH, defaultPiperPath);
@@ -257,6 +257,7 @@ async function generateWithPiper(text) {
     audioURL: mergedUrl,
     audioURLs: [mergedUrl],
     provider: "piper",
+    chunkCount: chunks.length,
   };
 }
 
@@ -303,6 +304,7 @@ async function generateWithEdge(text) {
     audioURL: mergedUrl,
     audioURLs: [mergedUrl],
     provider: "edge-tts",
+    chunkCount: chunks.length,
   };
 }
 

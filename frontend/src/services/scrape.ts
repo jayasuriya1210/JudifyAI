@@ -4,7 +4,8 @@ export interface SearchResult {
   title: string;
   link: string;
   pdf?: string;
-  caseId?: string;
+  caseId?: number;
+  preview?: string;
   [key: string]: any;
 }
 
@@ -12,6 +13,7 @@ export interface SearchResponse {
   query: string;
   optimizedQuery: string;
   provider: string;
+  attempts?: Array<{ query: string; provider: string; count: number }>;
   courtlistenerApiKeyConfigured: boolean;
   pdfLinksGuaranteed: boolean;
   results: SearchResult[];

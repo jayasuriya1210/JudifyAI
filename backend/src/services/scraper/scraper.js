@@ -15,7 +15,45 @@ function normalizeCaseRow(row) {
     pdf: toAbsoluteCourtListenerUrl(row.pdf),
     dateFiled: row.dateFiled || null,
     court: row.court || null,
+    preview: row.preview || null,
   };
+}
+
+function normalizeResultKey(link) {
+  try {
+    const url = new URL(toAbsoluteCourtListenerUrl(link));
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, "").toLowerCase();
+  } catch (_error) {
+    return String(link || "").trim().toLowerCase();
+  }
+}
+
+function mergeResultsWithApi(cheerioResults, apiResults) {
+  const byLink = new Map(
+    (apiResults || []).map((item) => [normalizeResultKey(item.link), item])
+  );
+
+  return (cheerioResults || []).map((item) => {
+    const key = normalizeResultKey(item.link);
+    const match = byLink.get(key);
+    if (!match) return item;
+
+    return normalizeCaseRow({
+      title: item.title || match.title,
+      link: item.link || match.link,
+      pdf: item.pdf || match.pdf || null,
+      dateFiled: item.dateFiled || match.dateFiled || null,
+      court: item.court || match.court || null,
+      preview: item.preview || match.preview || null,
+    });
+  });
+}
+
+function pickOpinionPdf(row) {
+  const opinions = Array.isArray(row?.opinions) ? row.opinions : [];
+  const first = opinions.find((op) => op && (op.download_url || op.local_path)) || null;
+  if (!first) return null;
+  return first.download_url || first.local_path || null;
 }
 
 async function scrapeCasesViaApi(query) {
@@ -30,14 +68,13 @@ async function scrapeCasesViaApi(query) {
       });
 
       const results = (res.data.results || []).map((row) => {
-        const opinions = Array.isArray(row.opinions) ? row.opinions : [];
-        const firstPdf = opinions.find((op) => op && (op.download_url || op.local_path)) || null;
         return normalizeCaseRow({
           title: row.caseName || row.caseNameFull,
           link: row.absolute_url,
-          pdf: firstPdf ? (firstPdf.download_url || firstPdf.local_path) : null,
+          pdf: pickOpinionPdf(row),
           dateFiled: row.dateFiled,
           court: row.court_citation_string,
+          preview: row.snippet || row.syllabus || null,
         });
       });
 
@@ -60,14 +97,19 @@ async function scrapeCasesViaApi(query) {
     const results = (res.data.results || []).map((row) => normalizeCaseRow({
       title: row.caseName || row.caseNameFull,
       link: row.absolute_url,
-      pdf: null,
+      pdf: pickOpinionPdf(row),
       dateFiled: row.dateFiled,
       court: row.court_citation_string,
+      preview: row.snippet || row.syllabus || null,
     }));
+
+    const timeoutMs = Number(process.env.CHEERIO_TIMEOUT_MS || 10000);
+    const maxEnrichCount = Number(process.env.CHEERIO_ENRICH_PDF_COUNT || 5);
+    await enrichPdfLinksViaCheerio(results, timeoutMs, maxEnrichCount);
 
     return {
       provider: "courtlistener-public-api",
-      pdfLinksGuaranteed: false,
+      pdfLinksGuaranteed: results.some((item) => Boolean(item.pdf)),
       results,
     };
   } catch (_error) {
@@ -153,6 +195,7 @@ function parseSearchResultsHtml(html, maxResults) {
       pdf: pdfHref ? toAbsoluteCourtListenerUrl(pdfHref) : null,
       dateFiled: dateMatch ? dateMatch[0] : null,
       court: rawText.slice(0, 160) || null,
+      preview: rawText.slice(0, 420) || null,
     }));
     return undefined;
   });
@@ -202,31 +245,31 @@ async function scrapeCases(query) {
   }
 
   const cheerioResult = await scrapeCasesViaCheerio(query);
-  if (cheerioResult.results.length) {
+  const cheerioHasResults = cheerioResult.results.length > 0;
+  const cheerioHasPdf = cheerioResult.results.some((r) => Boolean(r.pdf));
+
+  if (cheerioHasResults && (cheerioHasPdf || !allowApiFallback)) {
     return cheerioResult;
   }
 
-  // Always recover with API fallback when HTML scraping returns no results.
-  if (String(cheerioResult.provider || "").startsWith("cheerio-")) {
-    const apiResult = await scrapeCasesViaApi(query);
+  const apiResult = await scrapeCasesViaApi(query);
+
+  if (!cheerioHasResults) {
     return {
       ...apiResult,
       provider: `${cheerioResult.provider}->${apiResult.provider}`,
     };
   }
 
-  if (!allowApiFallback) {
-    return {
-      provider: cheerioResult.provider,
-      pdfLinksGuaranteed: cheerioResult.pdfLinksGuaranteed,
-      results: [],
-    };
+  if (!apiResult.results.length) {
+    return cheerioResult;
   }
 
-  const apiResult = await scrapeCasesViaApi(query);
+  const mergedResults = mergeResultsWithApi(cheerioResult.results, apiResult.results);
   return {
-    ...apiResult,
-    provider: `${cheerioResult.provider}->${apiResult.provider}`,
+    provider: `${cheerioResult.provider}+${apiResult.provider}`,
+    pdfLinksGuaranteed: mergedResults.some((r) => Boolean(r.pdf)),
+    results: mergedResults,
   };
 }
 

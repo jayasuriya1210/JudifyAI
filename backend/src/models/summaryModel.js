@@ -35,6 +35,18 @@ const Summary = {
       );
     });
   },
+
+  findById: (user_id, summary_id) => {
+    return new Promise((resolve, reject) => {
+      db.get(
+        `SELECT * FROM summaries
+         WHERE user_id = ? AND id = ?
+         LIMIT 1`,
+        [user_id, summary_id],
+        (err, row) => (err ? reject(err) : resolve(row))
+      );
+    });
+  },
 };
 
 module.exports = Summary;

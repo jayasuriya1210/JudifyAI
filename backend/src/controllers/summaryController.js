@@ -1,6 +1,7 @@
 const { summarizeText } = require("../services/summary/summarize");
 const Summary = require("../models/summaryModel");
 const Case = require("../models/caseModel");
+const { buildSummaryNarration } = require("../services/summary/summaryNarration");
 
 exports.summarize = async (req, res) => {
   try {
@@ -42,6 +43,7 @@ exports.getLatestSummary = async (req, res) => {
         courtReasoning: row.court_reasoning,
         judgmentOutcome: row.judgment_outcome,
         fullText: row.full_summary,
+        audioText: buildSummaryNarration(row),
       },
       createdAt: row.created_at,
     });

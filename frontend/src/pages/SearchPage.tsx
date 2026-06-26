@@ -28,7 +28,12 @@ const SearchPage = ({ onNavigate }: SearchPageProps) => {
       setResults(data.results || []);
       if (!data.results?.length) toast("No results found.");
     } catch (err: any) {
-      toast.error(err.message || "Search failed");
+      const status = Number(err?.status || 0);
+      if (status === 401 || status === 403) {
+        toast.error("Session expired. Please login again to continue searching.");
+        return;
+      }
+      toast.error(err?.message || "Search failed");
     } finally {
       setLoading(false);
     }
@@ -110,10 +115,23 @@ const SearchPage = ({ onNavigate }: SearchPageProps) => {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.05 }}
+              onClick={() => {
+                if (c.link) {
+                  window.open(c.link, "_blank", "noopener,noreferrer");
+                }
+              }}
               className="bg-card border border-border rounded-lg p-5 transition-all hover:border-primary/25 hover:shadow-[0_4px_24px_rgba(0,0,0,0.3)]"
             >
               <div className="flex items-start justify-between mb-2">
-                <h3 className="text-[14.5px] font-semibold leading-snug">{c.title}</h3>
+                <a
+                  href={c.link || "#"}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-[14.5px] font-semibold leading-snug hover:text-primary transition-colors"
+                >
+                  {c.title}
+                </a>
                 <button className="p-1.5 border border-border rounded-md text-muted-foreground hover:border-primary hover:text-primary hover:bg-gold-glow transition-all" title="Bookmark">
                   <Bookmark size={14} />
                 </button>
@@ -126,14 +144,14 @@ const SearchPage = ({ onNavigate }: SearchPageProps) => {
               {c.preview && <p className="text-[12.5px] text-muted-foreground leading-relaxed">{c.preview}</p>}
 
               <div className="flex gap-2 items-center mt-3.5 pt-3.5 border-t border-border">
-                <button onClick={() => handleAction("summary", c)} className="px-3 py-1.5 border border-border rounded-md text-xs text-muted-foreground flex items-center gap-1.5 hover:border-primary hover:text-primary hover:bg-gold-glow transition-all">
+                <button onClick={(e) => { e.stopPropagation(); handleAction("summary", c); }} className="px-3 py-1.5 border border-border rounded-md text-xs text-muted-foreground flex items-center gap-1.5 hover:border-primary hover:text-primary hover:bg-gold-glow transition-all">
                   <Brain size={13} /> Process & Summarize
                 </button>
-                <button onClick={() => handleAction("audio", c)} className="px-3 py-1.5 border border-border rounded-md text-xs text-muted-foreground flex items-center gap-1.5 hover:border-primary hover:text-primary hover:bg-gold-glow transition-all">
+                <button onClick={(e) => { e.stopPropagation(); handleAction("audio", c); }} className="px-3 py-1.5 border border-border rounded-md text-xs text-muted-foreground flex items-center gap-1.5 hover:border-primary hover:text-primary hover:bg-gold-glow transition-all">
                   <Music size={13} /> Generate Audio
                 </button>
                 {c.link && (
-                  <a href={c.link} target="_blank" rel="noopener noreferrer" className="ml-auto px-3 py-1.5 border border-border rounded-md text-xs text-muted-foreground flex items-center gap-1.5 hover:text-foreground transition-colors hover:border-foreground">
+                  <a href={c.link} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="ml-auto px-3 py-1.5 border border-border rounded-md text-xs text-muted-foreground flex items-center gap-1.5 hover:text-foreground transition-colors hover:border-foreground">
                     <ExternalLink size={13} /> Source
                   </a>
                 )}
